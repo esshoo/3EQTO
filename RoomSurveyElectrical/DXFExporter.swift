@@ -558,11 +558,7 @@ private struct DXFPlanBuilder {
     private func addFloorEntities(to dxf: inout DXFWriter) {
         for floor in record.project.floors ?? [] {
             dxf.polyline(
-                ExportGeometry.floorCorners(
-                    matrix: floor.matrix,
-                    width: floor.width,
-                    depth: floor.depth
-                ).map(cadPoint),
+                ExportGeometry.floorCorners(floor).map(cadPoint),
                 layer: "FLOOR",
                 closed: true
             )

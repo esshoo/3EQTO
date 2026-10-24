@@ -4271,7 +4271,7 @@ private struct USDZRoomView: UIViewRepresentable {
         let view = SCNView(frame: .zero)
         view.semanticContentAttribute = .forceLeftToRight
         view.backgroundColor = .secondarySystemGroupedBackground
-        applyPerformanceProfile(to: view)
+        context.coordinator.performance.attach(to: view, profile: performanceProfile)
         view.autoenablesDefaultLighting = true
         view.allowsCameraControl = true
         view.rendersContinuously = false
@@ -4288,7 +4288,7 @@ private struct USDZRoomView: UIViewRepresentable {
 
     func updateUIView(_ uiView: SCNView, context: Context) {
         context.coordinator.parent = self
-        applyPerformanceProfile(to: uiView)
+        context.coordinator.performance.refresh(profile: performanceProfile)
         context.coordinator.updateScene(in: uiView)
     }
 
@@ -4296,20 +4296,18 @@ private struct USDZRoomView: UIViewRepresentable {
         project.electricalSettings?.spatialScanPerformanceProfile ?? .balanced
     }
 
-    private func applyPerformanceProfile(to view: SCNView) {
-        view.preferredFramesPerSecond = performanceProfile.viewerFramesPerSecond
-        switch performanceProfile.viewerAntialiasingLevel {
-        case 4:
-            view.antialiasingMode = .multisampling4X
-        case 2:
-            view.antialiasingMode = .multisampling2X
-        default:
-            view.antialiasingMode = .none
-        }
+    static func dismantleUIView(_ view: SCNView, coordinator: Coordinator) {
+        coordinator.performance.stop()
+        view.isPlaying = false
+        view.scene = nil
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         var parent: USDZRoomView
+        let performance = QTOScenePerformanceController()
+        private var lastRenderedProject: RoomProject?
+        private var lastRenderedLayers: ViewerLayerVisibility?
         private var loadedURL: URL?
         private weak var sceneView: SCNView?
         private var initialCameraPosition = SCNVector3(5, 4, 5)
@@ -4327,6 +4325,8 @@ private struct USDZRoomView: UIViewRepresentable {
                 return
             }
             loadedURL = parent.url
+            lastRenderedProject = parent.project
+            lastRenderedLayers = parent.layers
             view.scene = scene
             scene.rootNode.childNode(withName: "Section_grp", recursively: true)?.isHidden = true
             addWallAppearanceOverlays(to: scene)
@@ -4344,6 +4344,12 @@ private struct USDZRoomView: UIViewRepresentable {
                 return
             }
             guard let scene = view.scene else { return }
+            guard lastRenderedProject != parent.project || lastRenderedLayers != parent.layers else {
+                focusOnRequestedWall(in: scene, animated: true)
+                return
+            }
+            lastRenderedProject = parent.project
+            lastRenderedLayers = parent.layers
             addWallAppearanceOverlays(to: scene)
             addElectricalMarkers(to: scene)
             addCeilingLights(to: scene)
@@ -5112,16 +5118,7 @@ private func surfacePlanEndpoints(_ surface: SurfaceSnapshot) -> (SIMD2<Float>, 
 }
 
 private func floorPlanCorners(_ floor: FloorSnapshot) -> [SIMD2<Float>] {
-    let matrix = floor.matrix
-    let center = planCenter(matrix)
-    let xAxis = normalizedPlanAxis(matrix.columns.0) * (floor.width / 2)
-    let zAxis = normalizedPlanAxis(matrix.columns.1) * (floor.depth / 2)
-    return [
-        center - xAxis - zAxis,
-        center + xAxis - zAxis,
-        center + xAxis + zAxis,
-        center - xAxis + zAxis
-    ]
+    ExportGeometry.floorCorners(floor)
 }
 
 private func objectPlanCorners(_ object: RoomObjectSnapshot) -> [SIMD2<Float>] {

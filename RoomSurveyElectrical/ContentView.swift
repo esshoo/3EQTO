@@ -17,11 +17,35 @@ struct ContentView: View {
     @State private var showThreeEFolderPicker = false
     @State private var showThreeEReselectionAlert = false
     @State private var pendingThreeEURLAfterFolderSelection: URL?
+    @State private var projectSearch = ""
+    @AppStorage("3EQTO.projectSort.v1") private var projectSort = "recent"
+
+    private var visibleProjects: [SurveyProject] {
+        let query = projectSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.activeProjects.filter {
+            query.isEmpty || $0.name.localizedStandardContains(query) || $0.kind.title.localizedStandardContains(query)
+        }.sorted { left, right in
+            if projectSort == "name" {
+                return left.name.localizedStandardCompare(right.name) == .orderedAscending
+            }
+            if projectSort == "scans", left.scanCount != right.scanCount { return left.scanCount > right.scanCount }
+            if left.updatedAt != right.updatedAt { return left.updatedAt > right.updatedAt }
+            return left.id.uuidString < right.id.uuidString
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                if !store.activeProjects.isEmpty {
+                Section {
+                    QTOHomeSummaryView(
+                        projectCount: store.activeProjects.count,
+                        scanCount: store.activeProjects.reduce(0) { $0 + $1.scanCount }
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                }
+                if !store.activeProjects.isEmpty && projectSearch.isEmpty {
                     Section("آخر المشروعات") {
                         RecentProjectsWidget(
                             projects: store.activeProjects.sorted {
@@ -48,8 +72,10 @@ struct ContentView: View {
                             systemImage: "folder.badge.plus",
                             description: Text("اضغط زر + لإنشاء أول مشروع.")
                         )
+                    } else if visibleProjects.isEmpty {
+                        ContentUnavailableView.search(text: projectSearch)
                     } else {
-                        ForEach(store.activeProjects) { project in
+                        ForEach(visibleProjects) { project in
                             NavigationLink {
                                 ProjectBrowserView(
                                     projectID: project.id,
@@ -82,8 +108,19 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("المشروعات")
+            .navigationTitle("3EQTO")
+            .searchable(text: $projectSearch, prompt: "ابحث باسم المشروع أو نوعه")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("ترتيب المشروعات", selection: $projectSort) {
+                            Text("الأحدث تعديلًا").tag("recent")
+                            Text("الاسم").tag("name")
+                            Text("عدد المسحات").tag("scans")
+                        }
+                    } label: { Image(systemName: "arrow.up.arrow.down") }
+                    .accessibilityLabel("ترتيب المشروعات")
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         showGlobalSettings = true
@@ -124,11 +161,12 @@ struct ContentView: View {
                     Button {
                         showNewProject = true
                     } label: {
-                        Image(systemName: "plus")
-                            .font(.title2.bold())
+                        Label("مشروع جديد", systemImage: "plus")
+                            .font(.headline)
                             .foregroundStyle(.white)
-                            .frame(width: 58, height: 58)
-                            .background(.blue, in: Circle())
+                            .padding(.horizontal, 20)
+                            .frame(minHeight: 50)
+                            .background(.blue, in: Capsule())
                             .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
                     }
                     .accessibilityLabel("إنشاء مشروع جديد")
@@ -181,7 +219,7 @@ struct ContentView: View {
                             packageNotice = ProjectPackageNotice(
                                 title: "تم ربط مجلد 3E",
                                 message:
-                                    "تم تسجيل 3ERoomElectrical داخل System/registry.json واستخدام Apps/RoomElectrical للتخزين."
+                                    "تم تسجيل 3EQTO داخل System/registry.json واستخدام Apps/RoomElectrical للتخزين."
                             )
                         }
                     } catch {
@@ -1490,12 +1528,20 @@ private struct ProjectTakeoffView: View {
             }
 
             Section("ملاحظات الحساب") {
+                let pendingAlignmentCount = rooms.filter {
+                    $0.scan.includedInTakeoff && $0.scan.resolvedSpatialAlignmentState == .independentNeedsAlignment
+                }.count
+                if pendingAlignmentCount > 0 {
+                    Label("\(pendingAlignmentCount) مسح مستقل داخل الحصر؛ راجع التداخل أو استبعد إعادة المسح لتجنب تكرار الكميات.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
                 Label(
                     "مساحة السقف في هذه المرحلة تساوي مساحة الأرضية المكتشفة لكل مسح.",
                     systemImage: "info.circle"
                 )
                 Label(
-                    "لا تُخصم أي فتحة من الحائط إلا بعد ربطها هندسيًا بذلك الحائط.",
+                    "يُخصم الجزء الواقع داخل الحائط فقط، وتُحسب الفتحات المتداخلة مرة واحدة.",
                     systemImage: "link"
                 )
             }
@@ -1706,6 +1752,9 @@ struct ScanTakeoffDetailView: View {
                 areaRow("صافي الحوائط", value: summary.netWallArea)
             }
 
+            Section("جودة الحصر") {
+                QTOQuantityQualityView(summary: summary)
+            }
             Section("الأرضيات والأسقف") {
                 if summary.floors.isEmpty {
                     Label(
@@ -1718,9 +1767,9 @@ struct ScanTakeoffDetailView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("أرضية \(floorNumber(floor.id))")
                                 .font(.headline)
-                            Text(
-                                "\(formattedLength(floor.width)) × \(formattedLength(floor.depth)) = \(formattedArea(floor.area))"
-                            )
+                            Text(floor.usesPolygon
+                                ? "مساحة مضلع المسح: \(formattedArea(floor.area))"
+                                : "تقدير مستطيل: \(formattedLength(floor.width)) × \(formattedLength(floor.depth)) = \(formattedArea(floor.area))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -2921,7 +2970,7 @@ struct ElectricalSettingsView: View {
         }
 
         Section("حول التطبيق") {
-            LabeledContent("الاسم", value: "3ERoomElectrical")
+            LabeledContent("الاسم", value: "3EQTO")
             LabeledContent("الإصدار", value: appVersion)
             LabeledContent("رقم البناء", value: appBuild)
             LabeledContent("Bundle ID", value: appBundleIdentifier)
@@ -3270,6 +3319,7 @@ struct RoomWorkflowView: View {
 
 private struct ScanRoomView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @ObservedObject var model: RoomCaptureModel
     let keepScreenAwakeDuringSpatialScan: Bool
     let scanContentMode: SpatialScanContentMode
@@ -3359,6 +3409,13 @@ private struct ScanRoomView: View {
                     .accessibilityLabel(model.thermalStateMessage)
                 }
 
+                if model.phase == .scanning {
+                    QTOScanStatusView(wallCount: model.scanWallCount,
+                                      openingCount: model.scanOpeningCount,
+                                      guidance: model.scanTrackingMessage,
+                                      compact: verticalSizeClass == .compact)
+                        .padding(.horizontal)
+                }
                 Spacer()
 
                 VStack(spacing: 12) {

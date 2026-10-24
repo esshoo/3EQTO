@@ -476,12 +476,14 @@ struct AdaptivePhotographicWallScanView: View {
 
             let wallIsComplete = project.photographicSegments(for: segment.wallID)
                 .allSatisfy(\.isPhotoCaptureSatisfied)
-            if wallIsComplete {
+            let thermalState = ProcessInfo.processInfo.thermalState
+            let canBuildComposites = thermalState == .nominal || thermalState == .fair
+            if wallIsComplete && canBuildComposites {
                 try rebuildComposite(for: segment.wallID)
             }
 
             if remainingCount == 0 {
-                try rebuildDirtyComposites()
+                if canBuildComposites { try rebuildDirtyComposites() }
                 var progress = project.photographicScanProgress ?? WallPhotographicScanProgress()
                 progress.completedAt = Date()
                 project.photographicScanProgress = progress
@@ -496,7 +498,8 @@ struct AdaptivePhotographicWallScanView: View {
         guard !isFinishing else { return }
         isFinishing = true
         do {
-            try rebuildDirtyComposites()
+            let thermalState = ProcessInfo.processInfo.thermalState
+            if thermalState == .nominal || thermalState == .fair { try rebuildDirtyComposites() }
             if remainingCount == 0 {
                 var progress = project.photographicScanProgress ?? WallPhotographicScanProgress()
                 progress.completedAt = Date()
@@ -600,8 +603,7 @@ private struct AdaptivePhotographicWallScanARView: UIViewRepresentable {
         sceneView.session = arSession
         sceneView.scene = SCNScene()
         sceneView.automaticallyUpdatesLighting = false
-        sceneView.antialiasingMode = antialiasingMode
-        sceneView.preferredFramesPerSecond = performanceProfile.photoScanFramesPerSecond
+        context.coordinator.performance.attach(to: sceneView, profile: performanceProfile)
         sceneView.contentScaleFactor = min(
             UIScreen.main.scale,
             CGFloat(performanceProfile.photoScanContentScaleLimit)
@@ -615,8 +617,7 @@ private struct AdaptivePhotographicWallScanARView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
         context.coordinator.parent = self
-        uiView.antialiasingMode = antialiasingMode
-        uiView.preferredFramesPerSecond = performanceProfile.photoScanFramesPerSecond
+        context.coordinator.performance.refresh(profile: performanceProfile)
         uiView.contentScaleFactor = min(
             UIScreen.main.scale,
             CGFloat(performanceProfile.photoScanContentScaleLimit)
@@ -635,15 +636,18 @@ private struct AdaptivePhotographicWallScanARView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: ARSCNView, coordinator: Coordinator) {
         coordinator.stopDisplayLink()
+        coordinator.performance.stop()
         coordinator.cancelPendingCapture()
         uiView.scene = SCNScene()
         uiView.session = ARSession()
         coordinator.sceneView = nil
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         var parent: AdaptivePhotographicWallScanARView
         weak var sceneView: ARSCNView?
+        let performance = QTOScenePerformanceController()
 
         private var displayLink: CADisplayLink?
         private var guideRoot = SCNNode()
@@ -810,8 +814,18 @@ private struct AdaptivePhotographicWallScanARView: UIViewRepresentable {
                 publish(.searching)
                 return
             }
+            guard UIApplication.shared.applicationState == .active else { return }
             let now = CACurrentMediaTime()
             let thermalState = ProcessInfo.processInfo.thermalState
+            if thermalState == .serious || thermalState == .critical {
+                stableSince = nil
+                publish(AdaptivePhotoScanGuidance(
+                    message: "التصوير التلقائي متوقف بسبب الحرارة. احفظ واخرج حتى يبرد الهاتف.",
+                    readiness: 0, isReady: false, activeSegmentID: nil,
+                    activeScreenPoint: nil, edgeDirection: nil
+                ))
+                return
+            }
             if thermalState != lastThermalState {
                 lastThermalState = thermalState
                 if let displayLink {
@@ -1201,6 +1215,13 @@ private struct AdaptivePhotographicWallScanARView: UIViewRepresentable {
             DispatchQueue.main.async { [weak self, weak sceneView] in
                 guard let self, let sceneView else {
                     self?.captureInProgress = false
+                    return
+                }
+                guard UIApplication.shared.applicationState == .active,
+                      ProcessInfo.processInfo.thermalState != .critical,
+                      ProcessInfo.processInfo.thermalState != .serious else {
+                    self.guideRoot.isHidden = false
+                    self.captureInProgress = false
                     return
                 }
                 let snapshot = sceneView.snapshot()

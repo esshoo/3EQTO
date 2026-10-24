@@ -31,13 +31,7 @@ private struct RecentProjectCard: View {
     let project: SurveyProject
     @State private var previewImage: UIImage?
 
-    private var firstRoom: RoomProject? {
-        project.scans
-            .sorted { $0.createdAt > $1.createdAt }
-            .lazy
-            .compactMap { ProjectRepository.load(projectID: $0.id) }
-            .first
-    }
+    @State private var firstRoom: RoomProject?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -108,6 +102,9 @@ private struct RecentProjectCard: View {
         }
         .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
         .task(id: project.updatedAt) {
+            firstRoom = project.scans.filter { !$0.archived }
+                .sorted { $0.createdAt > $1.createdAt }
+                .lazy.compactMap { ProjectRepository.load(projectID: $0.id) }.first
             previewImage = await ProjectPreviewRenderer.shared.image(
                 for: project
             )

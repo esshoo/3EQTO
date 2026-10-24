@@ -110,17 +110,24 @@ def main() -> int:
     parsed, sections = records(pairs)
     errors: list[str] = []
 
-    required = ["HEADER", "CLASSES", "TABLES", "BLOCKS", "ENTITIES"]
+    required = ["HEADER", "CLASSES", "TABLES", "BLOCKS", "ENTITIES", "OBJECTS"]
     for section in required:
         if section not in sections:
             errors.append(f"Missing required section: {section}")
-    if "OBJECTS" in sections:
-        errors.append("OBJECTS section must not be emitted")
+    # Mirror the app's current DXFCompatibilityValidator, not its v1.9.10 predecessor.
+    dictionaries = [record for record in parsed if record.section == "OBJECTS" and record.kind == "DICTIONARY"]
+    root_ok = any((record.first(5) or "").upper() == "1F0000"
+                  and record.first(330) == "0" and "ACAD_GROUP" in record.values(3)
+                  and "1F0001" in [v.upper() for v in record.values(350)] for record in dictionaries)
+    group_ok = any((record.first(5) or "").upper() == "1F0001"
+                   and (record.first(330) or "").upper() == "1F0000" for record in dictionaries)
+    if not root_ok or not group_ok:
+        errors.append("Required ACAD_GROUP object dictionaries are missing")
 
     if header_value(pairs, "$ACADVER") != "AC1021":
         errors.append("$ACADVER is not AC1021")
-    if (header_value(pairs, "$DWGCODEPAGE") or "").upper() != "UTF-8":
-        errors.append("$DWGCODEPAGE is not UTF-8")
+    if (header_value(pairs, "$DWGCODEPAGE") or "").upper() not in {"UTF-8", "ANSI_1252"}:
+        errors.append("Unsupported AutoCAD 2007 code-page header")
 
     forbidden = [record for record in parsed if record.kind in FORBIDDEN_RECORDS]
     if forbidden:
@@ -162,7 +169,7 @@ def main() -> int:
         expected = EXPECTED_SUBCLASS[record.kind]
         if expected not in record.values(100):
             errors.append(f"{record.kind} is missing {expected}")
-        if record.first(67) == "1" or record.first(410) is not None:
+        if record.first(67) == "1" or record.first(410) not in {None, "Model"}:
             errors.append(f"{record.kind} is marked as Paper Space")
         if record.kind == "LWPOLYLINE":
             declared = int(record.first(90) or "0")

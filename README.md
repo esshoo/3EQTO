@@ -1,35 +1,59 @@
-# 3ERoomElectrical v1.9.27 — Build 49
+# 3EQTO — Quality R1
 
-## Build 49.1 — Architectural Corrections Foundation
+**Development candidate: v1.9.28 / build 50** · iPhone and iPad · iOS 17+
 
-هذا المصدر يبدأ من **v1.9.26 Build 48** المعتمد بعد نجاح GitHub Actions والتثبيت والتشغيل على الجهاز.
+RoomPlan scanning, editable 2D/3D surveys, electrical placement, wall photographs,
+architectural correction sessions, quantity takeoff, and PDF/DXF/GLB/PNG/XLSX exports.
 
-### الجديد
+## هذا التحديث
 
-- جلسات تصحيح معماري مرتبطة بمسح واحد.
-- حفظ هندسة الحوائط الأصلية بصورة مستقلة قبل أول تصحيح.
-- طبقة `architecturalCorrections` وسجل كامل لكل تعديل.
-- تعديل طول الحائط وارتفاعه وموضعه X/Z ودورانه حول Y.
-- معاينة Before/After في مخطط 2D لا يتأثر باتجاه RTL.
-- قبول تعديل حائط أو رفضه قبل اعتماد الجلسة.
-- Recovery Snapshot تلقائية قبل إنشاء الجلسة.
-- اعتماد التعديلات مع فحص Stale/Conflict وإرجاع الملفات عند فشل الحفظ.
-- الحفاظ على ارتباط نقاط الكهرباء بالحائط وتحديث موضعها العالمي بعد تحريك الحائط.
-- عرض 2D و3D يستخدمان الهندسة المصححة بعد الاعتماد، مع إبقاء الأصل محفوظًا.
-- تصدير واستيراد `.3eroom` يحتفظان بالأصل وسجل التصحيحات.
+تحسينات للحصر، العرض، الواجهات، التصوير والأداء الحراري، مبنية على
+`373a30be1e37a7995418be1db66c1f877568d801` (v1.9.27 / Build 49.1).
 
-### لا يشمل Build 49.1
+- اسم العرض أصبح **3EQTO** مع الحفاظ على Bundle ID والتخزين والروابط القديمة.
+- حفظ مضلعات الأرضيات الجديدة وحساب مساحتها الفعلية، مع تقدير مستطيل واضح للمسحات القديمة.
+- ربط الفتحات بالحوائط، قصها عند الحدود، وعدم خصم مناطق التداخل مرتين.
+- بحث وترتيب للمشروعات، معلومات أثناء المسح، وتنبيهات جودة في التطبيق والتقارير.
+- إصلاح تحديث عناصر 3D دون تغير العدد، والمحافظة على الكاميرا عند تبديل الطبقات.
+- ميزانية عرض تتكيف مع حالة الحرارة وتوفير الطاقة، مع تقليل تحديثات AR غير الضرورية.
+- فحوصات Swift فعلية للحسابات، بالإضافة إلى فحوصات التوافق والتصدير.
 
-- إضافة الأبواب أوالشبابيك أوالفتحات.
-- لا يعيد موضعة الأبواب والشبابيك والفتحات الموجودة عند نقل الحائط؛ تدخل هذه الأدوات في Build 49.2.
-- تقسيم ودمج الحوائط.
-- إعادة مسح منطقة ومقارنة هندستين.
-- نقل الارتباطات إلى حائط بديل.
-- محاذاة وتجميع المسحات؛ انتقلت إلى Build 50 بعد اعتماد Build 48 لتكامل مجموعة 3E.
+**ليست نسخة معتمدة على جهاز بعد.** فحص Swift المحلي لا يغني عن Xcode، أو اختبار
+المسح على iPhone. لا توجد نسبة تحسن أداء أو حرارة مقاسة لهذا التحديث حتى الآن.
 
-### هوية مجموعة 3E
+التفاصيل والحدود والاختبارات: [تقرير المراجعة](Docs/3EQTO-Quality-R1-Review.md).
 
-- Bundle ID: `com.essam.3E.roomelectrical`
-- URL Scheme: `electrical`
-- App Folder: `Apps/RoomElectrical`
-- Future App Group: `group.com.essam.3e` بدون Entitlement في نسخة التوقيع المجاني.
+## البناء
+
+الـWorkflow الحالي `build-unsigned-ipa.yml` يعمل تلقائيًا بعد Push إلى `main`.
+من PowerShell، بعد Commit وPush:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Tools\Build-3EQTO.ps1
+```
+
+ولبدء تشغيل يدوي جديد:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Tools\Build-3EQTO.ps1 -Dispatch
+```
+
+يتطلب GitHub CLI (`gh auth login`). السكربت يتابع Commit المطابق، ينزّل التشخيصات،
+ويتحقق من SHA256 للملف. الناتج **3EQTO-unsigned.ipa** يحتاج توقيعًا صالحًا قبل
+تثبيته، مثل مسار Sideloadly المستخدم سابقًا. لا تشارك بيانات Apple ID داخل المستودع.
+
+## هوية التوافق — لا تغيّرها لتغيير الاسم الظاهر
+
+| البند | القيمة المحفوظة |
+|---|---|
+| Bundle ID | `com.essam.3E.roomelectrical` |
+| Widget Bundle ID | `com.essam.3E.roomelectrical.widget` |
+| Xcode project / scheme | `RoomSurveyElectrical` |
+| Internal product | `3ERoomElectrical.app` |
+| Shared folder | `Apps/RoomElectrical` |
+| Registry key | `roomElectrical` |
+| Deep links | `electrical://` + `3eroomelectrical://` |
+| Project package | `.3eroom` / existing UTType |
+
+المقصود بـbuild 50 هنا رقم حزمة iOS الجديد، وليس إنجاز محرر محاذاة المسحات
+المسمى Build 50 في خارطة الطريق القديمة؛ هذا المحرر لم يُنفّذ ضمن Quality R1.

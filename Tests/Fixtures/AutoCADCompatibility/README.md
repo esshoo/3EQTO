@@ -9,3 +9,17 @@ Use them for a quick strict-reader check:
 - `3E-v1.9-layouts.dxf`
 
 They contain test geometry only and no embedded project data.
+
+## Quality R1 review (2026-10-24)
+
+These v1.9 fixtures are historical, NOT passing fixtures for the current AC1021
+model-space-only exporter. They contain legacy layout/ownership records and are
+expected to fail the current validator. Do not use a failure here as evidence
+that the new app exporter failed. The old Python checker also incorrectly
+rejected the required OBJECTS dictionaries, `410=Model`, and ANSI_1252 header;
+Quality R1 aligns those checks with the in-app Swift validator.
+
+`python3 Tools/check-qto-dxf.py` compiles the actual DXFWriter implementation and
+DXFCompatibilityValidator and tests a current minimal contract fixture, plus
+negative cases. This checks the writer/validator contract, NOT AutoCAD rendering
+or full-project export on an iPhone. Device-exported DXF still needs a reader test.

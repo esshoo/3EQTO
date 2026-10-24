@@ -37,6 +37,16 @@ enum ExportGeometry {
         )
     }
 
+    static func floorCorners(_ floor: FloorSnapshot) -> [SIMD2<Float>] {
+        if let polygon = QTOQualityMath.floorPolygon(floor.polygonCorners) {
+            return polygon.map { point in
+                let world = floor.matrix * SIMD4<Float>(Float(point.x), Float(point.y), 0, 1)
+                return SIMD2(world.x, world.z)
+            }
+        }
+        return floorCorners(matrix: floor.matrix, width: floor.width, depth: floor.depth)
+    }
+
     static func floorCorners(
         matrix: simd_float4x4,
         width: Float,
@@ -92,11 +102,7 @@ enum ExportGeometry {
         }
         for floor in project.floors ?? [] {
             points.append(
-                contentsOf: floorCorners(
-                    matrix: floor.matrix,
-                    width: floor.width,
-                    depth: floor.depth
-                )
+                contentsOf: floorCorners(floor)
             )
         }
         for object in project.objects ?? [] {

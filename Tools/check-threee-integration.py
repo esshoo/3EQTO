@@ -58,7 +58,7 @@ def normalize_apps(raw_apps: object) -> dict[str, dict[str, object]]:
 def test_registry_merge_contract() -> None:
     expected = {
         "appKey": "roomElectrical",
-        "displayName": "3ERoomElectrical",
+        "displayName": "3EQTO",
         "bundleIdentifier": "com.essam.3E.roomelectrical",
         "urlScheme": "electrical",
         "folder": "Apps/RoomElectrical",
@@ -137,7 +137,7 @@ def main() -> int:
     pbx = text("RoomSurveyElectrical.xcodeproj/project.pbxproj")
 
     expected_constants = {
-        'displayName = "3ERoomElectrical"': "display name constant",
+        'displayName = "3EQTO"': "display name constant",
         'bundleIdentifier = "com.essam.3E.roomelectrical"': "bundle identifier constant",
         'appKey = "roomElectrical"': "app key constant",
         'urlScheme = "electrical"': "URL scheme constant",
@@ -154,7 +154,7 @@ def main() -> int:
         for item in info.get("CFBundleURLTypes", [])
         for scheme in item.get("CFBundleURLSchemes", [])
     ]
-    check(info.get("CFBundleDisplayName") == "3ERoomElectrical", "Info.plist display name")
+    check(info.get("CFBundleDisplayName") == "3EQTO", "Info.plist display name")
     check("electrical" in schemes, "Info.plist registers electrical URL scheme")
     check("3eroomelectrical" in schemes, "legacy URL scheme remains compatible")
     check("com.essam.3E.roomelectrical" in pbx, "main target bundle identifier updated")
@@ -218,14 +218,10 @@ def main() -> int:
         check(guard in storage, f"relative path guard: {guard}")
     check('action == "open"' in router, "router permits only open action")
 
-    # Core project formats/exporters must be byte-identical to the baseline supplied beside this build.
+    # Persistent package/storage contracts stay unchanged. Quality R1 intentionally updates geometric exporters.
     protected = [
         "RoomSurveyElectrical/ProjectPackage.swift",
-        "RoomSurveyElectrical/DXFExporter.swift",
-        "RoomSurveyElectrical/LayeredPDFExporter.swift",
-        "RoomSurveyElectrical/ExportCenter.swift",
         "RoomSurveyElectrical/DocumentIntegration.swift",
-        "RoomSurveyElectrical/GLBExporter.swift",
         "RoomSurveyElectrical/WorkspaceModels.swift",
         "RoomSurveyElectrical/ProjectFoundationModels.swift",
     ]

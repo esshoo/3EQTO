@@ -630,7 +630,7 @@ enum ProjectExportService {
         let trimmed = cleaned.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        return trimmed.isEmpty ? "3ERoomElectrical" : trimmed
+        return trimmed.isEmpty ? "3EQTO" : trimmed
     }
 }
 
@@ -721,8 +721,30 @@ private struct TakeoffXLSXBuilder {
             floorsSheet(),
             wallsSheet(),
             openingsSheet(),
-            electricalSheet()
+            electricalSheet(),
+            qualitySheet()
         ]
+    }
+
+    private func qualitySheet() -> XLSXSheet {
+        var rows: [[XLSXCell]] = [
+            [.text("ملاحظات جودة الحصر", style: 1)],
+            ["المسح", "الملاحظة"].map { .text($0, style: 2) },
+            [.text("عام"), .text("الأسقف تقدير من الأرضيات؛ الحوائط والفتحات مستطيلات. راجع المقاسات ميدانيًا قبل التنفيذ.")]
+        ]
+        for room in rooms {
+            let summary = room.summary
+            if summary.rectangularFloorEstimateCount > 0 {
+                rows.append([.text(room.scan.name), .text("أرضيات بتقدير مستطيل: \(summary.rectangularFloorEstimateCount). لا توجد حدود مضلع صالحة لهذه الأرضيات.")])
+            }
+            if summary.unassignedOpeningCount > 0 {
+                rows.append([.text(room.scan.name), .text("فتحات غير مرتبطة، لم تخصم: \(summary.unassignedOpeningCount).")])
+            }
+            if room.scan.resolvedSpatialAlignmentState == .independentNeedsAlignment {
+                rows.append([.text(room.scan.name), .text("مسح مستقل يحتاج محاذاة؛ تأكد أن كمياته لا تتكرر مع مسح آخر داخل الحصر.")])
+            }
+        }
+        return XLSXSheet(name: "جودة الحصر", rows: rows, columnWidths: [28, 90], mergedTitle: true, autoFilterRow: 2)
     }
 
     private func summarySheet() -> XLSXSheet {
@@ -918,7 +940,8 @@ private struct TakeoffXLSXBuilder {
                 "رقم السطح",
                 "الطول م",
                 "العرض م",
-                "المساحة م²"
+                "المساحة م²",
+                "طريقة الحساب"
             ].map { .text($0, style: 2) }
         ]
 
@@ -931,17 +954,17 @@ private struct TakeoffXLSXBuilder {
                     .integer(index + 1),
                     .number(Double(floor.width)),
                     .number(Double(floor.depth)),
-                    .formula(
-                        "D\(row)*E\(row)",
-                        cachedValue: Double(floor.area)
-                    )
+                    floor.usesPolygon
+                        ? .number(Double(floor.area))
+                        : .formula("D\(row)*E\(row)", cachedValue: Double(floor.area)),
+                    .text(floor.usesPolygon ? "مضلع المسح" : "تقدير مستطيل")
                 ])
             }
         }
         return XLSXSheet(
             name: "الأرضيات",
             rows: rows,
-            columnWidths: [28, 28, 14, 14, 14, 17],
+            columnWidths: [28, 28, 14, 14, 14, 17, 24],
             mergedTitle: true,
             autoFilterRow: 2
         )
@@ -1474,7 +1497,7 @@ private enum TakeoffPDFRenderer {
         format.documentInfo = [
             kCGPDFContextTitle as String: "\(title) – تقرير الحصر",
             kCGPDFContextAuthor as String: metadata.brandName,
-            kCGPDFContextCreator as String: "3ERoomElectrical"
+            kCGPDFContextCreator as String: "3EQTO"
         ]
         let renderer = UIGraphicsPDFRenderer(bounds: page, format: format)
         try renderer.writePDF(to: url) { context in
@@ -1489,6 +1512,7 @@ private enum TakeoffPDFRenderer {
             let total = ProjectTakeoffSummary(
                 rooms: rooms.map(\.summary)
             )
+            state.drawSmallNote("الأسقف تقدير من الأرضيات؛ الحوائط والفتحات مستطيلات. راجع المقاسات ميدانيًا قبل التنفيذ.")
             state.drawSectionTitle("ملخص المشروع")
             let summaryRows: [(String, String)] = [
                 ("عدد المسحات", "\(rooms.count)"),
@@ -1512,6 +1536,16 @@ private enum TakeoffPDFRenderer {
                 )
                 if !room.location.isEmpty {
                     state.drawSmallNote("الموقع: \(room.location)")
+                }
+
+                if room.summary.rectangularFloorEstimateCount > 0 {
+                    state.drawSmallNote("أرضيات محسوبة كتقدير مستطيل: \(room.summary.rectangularFloorEstimateCount).")
+                }
+                if room.summary.unassignedOpeningCount > 0 {
+                    state.drawSmallNote("فتحات غير مرتبطة لم تخصم: \(room.summary.unassignedOpeningCount).")
+                }
+                if room.scan.resolvedSpatialAlignmentState == .independentNeedsAlignment {
+                    state.drawSmallNote("مسح مستقل: راجع احتمال تكرار الكميات مع مسح آخر.")
                 }
 
                 state.drawTableHeader(
@@ -1694,18 +1728,27 @@ private enum TakeoffPDFRenderer {
         }
 
         mutating func drawSmallNote(_ value: String) {
-            drawText(
-                value,
-                in: CGRect(
-                    x: TakeoffPDFRenderer.margin,
-                    y: y,
-                    width: contentWidth,
-                    height: 20
-                ),
-                font: .systemFont(ofSize: 10),
-                color: .darkGray
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .right
+            paragraph.baseWritingDirection = .rightToLeft
+            paragraph.lineBreakMode = .byWordWrapping
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 10),
+                .foregroundColor: UIColor.darkGray,
+                .paragraphStyle: paragraph
+            ]
+            let size = (value as NSString).boundingRect(
+                with: CGSize(width: contentWidth, height: 1000),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attributes, context: nil
             )
-            y += 24
+            let height = max(20, ceil(size.height) + 2)
+            ensureSpace(height + 4)
+            (value as NSString).draw(
+                in: CGRect(x: TakeoffPDFRenderer.margin, y: y, width: contentWidth, height: height),
+                withAttributes: attributes
+            )
+            y += height + 4
         }
 
         mutating func drawKeyValue(label: String, value: String) {
@@ -1882,8 +1925,8 @@ private enum PlanPDFRenderer {
         let format = UIGraphicsPDFRendererFormat()
         format.documentInfo = [
             kCGPDFContextTitle as String: "\(title) – مخطط 2D",
-            kCGPDFContextAuthor as String: "3ERoomElectrical",
-            kCGPDFContextCreator as String: "3ERoomElectrical"
+            kCGPDFContextAuthor as String: "3EQTO",
+            kCGPDFContextCreator as String: "3EQTO"
         ]
         let renderer = UIGraphicsPDFRenderer(bounds: page, format: format)
         try renderer.writePDF(to: url) { context in
@@ -1942,7 +1985,7 @@ private enum PlanPDFRenderer {
             color: UIColor.white.withAlphaComponent(0.9)
         )
         drawText(
-            "3ERoomElectrical",
+            "3EQTO",
             in: CGRect(
                 x: header.minX + 16,
                 y: header.minY + 9,
@@ -2131,11 +2174,7 @@ private enum PlanPDFRenderer {
         drawGrid(in: rect, scale: projection.scale)
 
         for floor in project.floors ?? [] {
-            let points = floorCorners(
-                matrix: floor.matrix,
-                width: floor.width,
-                depth: floor.depth
-            ).map(projection.map)
+            let points = ExportGeometry.floorCorners(floor).map(projection.map)
             drawPolygon(
                 points,
                 fill: UIColor(white: 0.89, alpha: 0.65),
@@ -2616,11 +2655,7 @@ private enum PlanPDFRenderer {
             }
             for floor in project.floors ?? [] {
                 points.append(
-                    contentsOf: PlanPDFRenderer.floorCorners(
-                        matrix: floor.matrix,
-                        width: floor.width,
-                        depth: floor.depth
-                    )
+                    contentsOf: ExportGeometry.floorCorners(floor)
                 )
             }
             for object in project.objects ?? [] {

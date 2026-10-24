@@ -111,6 +111,7 @@ private struct GLBRoomBuilder {
             cube: cube
         )
         var nodes = makeBaseNodes(meshes: baseMeshes)
+        nodes.append(contentsOf: makePolygonFloorNodes(resources: &resources))
         var sceneRootNodes = Array(nodes.indices)
         if options.includeWallAppearances {
             let appearanceNodes = makeWallAppearanceNodes(resources: &resources)
@@ -134,7 +135,7 @@ private struct GLBRoomBuilder {
         var json: [String: Any] = [
             "asset": [
                 "version": "2.0",
-                "generator": "3ERoomElectrical",
+                "generator": "3EQTO",
                 "copyright": metadata.brandName
             ],
             "scene": 0,
@@ -233,6 +234,8 @@ private struct GLBRoomBuilder {
         var nodes: [[String: Any]] = []
 
         for (index, floor) in (record.project.floors ?? []).enumerated() {
+            if let polygon = QTOQualityMath.floorPolygon(floor.polygonCorners),
+               QTOQualityMath.triangles(polygon) != nil { continue }
             guard let mesh = meshes[.floor] else { continue }
             nodes.append(
                 node(
@@ -399,6 +402,26 @@ private struct GLBRoomBuilder {
                     )
                 )
             }
+        }
+        return nodes
+    }
+
+    private func makePolygonFloorNodes(resources: inout GLBResources) -> [[String: Any]] {
+        var nodes: [[String: Any]] = []
+        let materialIndex = resources.appendMaterial(baseMaterialDefinition(.floor))
+        for (index, floor) in (record.project.floors ?? []).enumerated() {
+            guard let polygon = QTOQualityMath.floorPolygon(floor.polygonCorners),
+                  let indices = QTOQualityMath.triangles(polygon) else { continue }
+            let positions: [Float] = polygon.flatMap { [Float($0.x), Float($0.y), 0] }
+            let normals = polygon.flatMap { _ -> [Float] in [0, 0, 1] }
+            let primitive = resources.appendPrimitiveGeometry(GLBRawGeometry(
+                positions: positions, normals: normals, textureCoordinates: [], indices: indices
+            ))
+            let mesh = resources.appendMesh(
+                name: "Floor Polygon \(index + 1)", geometry: primitive,
+                materialIndex: materialIndex, includesTextureCoordinates: false
+            )
+            nodes.append(node(name: "Floor \(index + 1)", mesh: mesh, matrix: matrixArray(floor.matrix)))
         }
         return nodes
     }

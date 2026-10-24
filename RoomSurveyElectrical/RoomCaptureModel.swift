@@ -57,6 +57,11 @@ final class RoomCaptureModel: NSObject, ObservableObject,
         var extent: [Float]
     }
 
+    @Published private(set) var scanWallCount = 0
+    @Published private(set) var scanOpeningCount = 0
+    @Published private(set) var scanTrackingMessage = "ابدأ من ركن واضح وحرّك الهاتف ببطء."
+    private nonisolated let frameDeliveryGate = QTOFrameGate(interval: 0.10)
+    private var lastScanStatisticsAt: Date = .distantPast
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var project: RoomProject?
     @Published private(set) var thermalState: ProcessInfo.ThermalState
@@ -831,6 +836,10 @@ final class RoomCaptureModel: NSObject, ObservableObject,
         relocalizationEvidenceMessage = ""
         relocalizationProgress = 1
         isCompletingRelocalization = false
+        scanWallCount = 0
+        scanOpeningCount = 0
+        lastScanStatisticsAt = .distantPast
+        scanTrackingMessage = "ابدأ من ركن واضح وحرّك الهاتف ببطء."
         phase = .scanning
         if !roomCaptureSessionIsRunning {
             let captureView = prepareRoomCaptureViewForCurrentSession()
@@ -898,17 +907,24 @@ final class RoomCaptureModel: NSObject, ObservableObject,
         // a reliable wall yet. The frame is the visual fallback reference and
         // the camera transform is what lets a fresh AR session be aligned back
         // into the persistent project coordinate space.
-        if let currentImageData = captureReferenceImageData(from: frame) {
+        if thermalState != .serious && thermalState != .critical,
+           let currentImageData = captureReferenceImageData(from: frame) {
             pendingReferenceImageData = currentImageData
             pendingReferenceCameraTransform = frame?.camera.transform.columnMajorValues
                 ?? currentWallReference?.cameraTransform
         } else {
             pendingReferenceImageData = latestWallReferenceImageData
             pendingReferenceCameraTransform = latestWallReference?.cameraTransform
+            pendingWallReference = latestWallReference ?? pendingWallReference
         }
         pendingGeographicReference = referenceSensor.snapshot()
             ?? latestWallReferenceGeographicReference
 
+        let pauseCameraImmediately: Bool
+        switch reason {
+        case .thermalSafety, .applicationBackground: pauseCameraImmediately = true
+        case .manualPause, .userFinished: pauseCameraImmediately = false
+        }
         pendingWorldMapTask?.cancel()
         let fallbackMap = cachedGoodWorldMap
         let fallbackQuality = cachedGoodWorldMapQuality
@@ -920,7 +936,10 @@ final class RoomCaptureModel: NSObject, ObservableObject,
             let currentQuality = self.worldMapQuality(
                 for: self.arSession.currentFrame?.worldMappingStatus
             )
-            let currentMap = try? await self.currentWorldMap()
+            // A safety pause prioritises cooling and uses the already-cached map.
+            let currentMap: ARWorldMap?
+            if pauseCameraImmediately { currentMap = nil }
+            else { currentMap = try? await self.currentWorldMap() }
 
             var candidates: [(map: ARWorldMap, quality: SpatialWorldMapQuality, date: Date)] = []
             if currentQuality.isSuitableForResume, let currentMap {
@@ -967,7 +986,7 @@ final class RoomCaptureModel: NSObject, ObservableObject,
             phase = .failed("تعذر الوصول إلى جلسة RoomPlan الحالية لحفظ المسح.")
             return
         }
-        roomCaptureView.captureSession.stop(pauseARSession: false)
+        roomCaptureView.captureSession.stop(pauseARSession: pauseCameraImmediately)
         roomCaptureSessionIsRunning = false
     }
 
@@ -1240,7 +1259,20 @@ final class RoomCaptureModel: NSObject, ObservableObject,
         cameraDidChangeTrackingState camera: ARCamera
     ) {
         Task { @MainActor [weak self] in
-            guard let self, self.phase == .relocalizing else { return }
+            guard let self else { return }
+            if self.phase == .scanning {
+                let message: String
+                switch camera.trackingState {
+                case .normal: message = "التتبع مستقر — غطِّ الحوائط والحواف ببطء."
+                case .limited(.excessiveMotion): message = "الحركة سريعة؛ ثبّت الهاتف ثم تحرّك ببطء."
+                case .limited(.insufficientFeatures): message = "وجّه الكاميرا إلى باب أو ركن واضح وحسّن الإضاءة."
+                case .limited: message = "جارٍ تثبيت التتبع؛ لا تنتقل إلى غرفة أخرى الآن."
+                case .notAvailable: message = "التتبع غير متاح؛ انتظر ثبات الكاميرا قبل المتابعة."
+                @unknown default: message = "تحقق من ثبات الهاتف والإضاءة."
+                }
+                if self.scanTrackingMessage != message { self.scanTrackingMessage = message }
+            }
+            guard self.phase == .relocalizing else { return }
             switch camera.trackingState {
             case .normal:
                 self.relocalizationMessage =
@@ -1267,7 +1299,10 @@ final class RoomCaptureModel: NSObject, ObservableObject,
         _ session: ARSession,
         didUpdate frame: ARFrame
     ) {
+        let gate = frameDeliveryGate
+        guard gate.shouldDeliver(at: frame.timestamp) else { return }
         Task { @MainActor [weak self] in
+            defer { gate.completeDelivery() }
             guard let self else { return }
             if self.phase == .relocalizing {
                 self.evaluateRelocalizationEvidence(frame: frame)
@@ -1331,15 +1366,27 @@ final class RoomCaptureModel: NSObject, ObservableObject,
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.latestRoomSnapshot = room
+            let now = Date()
+            if now.timeIntervalSince(self.lastScanStatisticsAt) >= 0.5 {
+                self.lastScanStatisticsAt = now
+                if self.scanWallCount != room.walls.count { self.scanWallCount = room.walls.count }
+                let openings = room.doors.count + room.windows.count + room.openings.count
+                if self.scanOpeningCount != openings { self.scanOpeningCount = openings }
+            }
             let frame = self.arSession.currentFrame
-            if let reference = self.makeWallReference(from: room, frame: frame) {
+            let interval = QTOFrameBudget.referenceImageInterval(
+                thermalLevel: self.thermalState.rawValue,
+                lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled
+            )
+            if now.timeIntervalSince(self.lastReferencePairCapturedAt) >= interval,
+               let reference = self.makeWallReference(from: room, frame: frame),
+               let imageData = self.captureReferenceImageData(from: frame) {
+                // The pose and image must come from the SAME frame. Updating the
+                // pose alone between images broke the visual fallback pairing.
                 self.latestWallReference = reference
-                if Date().timeIntervalSince(self.lastReferencePairCapturedAt) >= 0.75,
-                   let imageData = self.captureReferenceImageData(from: frame) {
-                    self.latestWallReferenceImageData = imageData
-                    self.latestWallReferenceGeographicReference = self.referenceSensor.snapshot()
-                    self.lastReferencePairCapturedAt = Date()
-                }
+                self.latestWallReferenceImageData = imageData
+                self.latestWallReferenceGeographicReference = self.referenceSensor.snapshot()
+                self.lastReferencePairCapturedAt = now
             }
             self.cacheGoodWorldMapIfNeeded()
             self.saveResumeCheckpointIfNeeded(from: room)
@@ -2224,7 +2271,9 @@ final class SpatialCaptureHostView: UIView {
         relocalizationView.semanticContentAttribute = .forceLeftToRight
         relocalizationView.session = arSession
         relocalizationView.scene = SCNScene()
-        relocalizationView.automaticallyUpdatesLighting = true
+        relocalizationView.automaticallyUpdatesLighting = false
+        relocalizationView.preferredFramesPerSecond = 24
+        relocalizationView.antialiasingMode = .none
         showRelocalizationPreview()
     }
 
@@ -2233,6 +2282,7 @@ final class SpatialCaptureHostView: UIView {
     }
 
     func showRelocalizationPreview() {
+        relocalizationView.isPlaying = true
         activeCaptureView?.removeFromSuperview()
         activeCaptureView = nil
         installFillingSubview(relocalizationView)
@@ -2242,6 +2292,7 @@ final class SpatialCaptureHostView: UIView {
         guard activeCaptureView !== captureView || captureView.superview !== self else {
             return
         }
+        relocalizationView.isPlaying = false
         relocalizationView.removeFromSuperview()
         activeCaptureView?.removeFromSuperview()
         activeCaptureView = captureView

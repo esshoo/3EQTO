@@ -19,10 +19,12 @@ struct SnapshotRoom3DView: UIViewRepresentable {
         let view = SCNView(frame: .zero)
         view.semanticContentAttribute = .forceLeftToRight
         view.backgroundColor = .secondarySystemBackground
-        view.antialiasingMode = .multisampling4X
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = false
         view.rendersContinuously = false
+        context.coordinator.performance.attach(
+            to: view, profile: project.electricalSettings?.spatialScanPerformanceProfile ?? .balanced
+        )
         context.coordinator.rebuild(
             view: view,
             project: project,
@@ -32,7 +34,16 @@ struct SnapshotRoom3DView: UIViewRepresentable {
         return view
     }
 
+    static func dismantleUIView(_ view: SCNView, coordinator: Coordinator) {
+        coordinator.performance.stop()
+        view.isPlaying = false
+        view.scene = nil
+    }
+
     func updateUIView(_ view: SCNView, context: Context) {
+        context.coordinator.performance.refresh(
+            profile: project.electricalSettings?.spatialScanPerformanceProfile ?? .balanced
+        )
         let signature = Signature(project: project, layers: layers, focus: focusedWallID)
         guard context.coordinator.signature != signature else { return }
         context.coordinator.rebuild(
@@ -44,27 +55,17 @@ struct SnapshotRoom3DView: UIViewRepresentable {
     }
 
     struct Signature: Equatable {
-        let wallCount: Int
-        let surfaceCount: Int
-        let floorCount: Int
-        let objectCount: Int
-        let revision: Int
+        // Counts miss moves, colours, electricity edits, and wall-photo changes.
+        let project: RoomProject
         let layers: ViewerLayerVisibility
         let focus: UUID?
-
-        init(project: RoomProject, layers: ViewerLayerVisibility, focus: UUID?) {
-            wallCount = project.walls.count
-            surfaceCount = project.surfaces.count
-            floorCount = project.floors?.count ?? 0
-            objectCount = project.objects?.count ?? 0
-            revision = project.snapshotGeometryRevision ?? 0
-            self.layers = layers
-            self.focus = focus
-        }
     }
 
+    @MainActor
     final class Coordinator {
         var signature: Signature?
+        let performance = QTOScenePerformanceController()
+        private var openingsByWall: [UUID: [QTORect]] = [:]
 
         func rebuild(
             view: SCNView,
@@ -72,18 +73,33 @@ struct SnapshotRoom3DView: UIViewRepresentable {
             layers: ViewerLayerVisibility,
             focusedWallID: UUID?
         ) {
+            let preserveCamera = signature?.project.id == project.id
+                && signature?.focus == focusedWallID
+            let cameraTransform = preserveCamera ? view.pointOfView?.simdTransform : nil
+            let cameraFieldOfView = view.pointOfView?.camera?.fieldOfView
             signature = Signature(project: project, layers: layers, focus: focusedWallID)
+            openingsByWall.removeAll(keepingCapacity: true)
+            for surface in project.surfaces {
+                if let match = QTOTakeoffGeometry.assignOpening(surface, walls: project.walls) {
+                    openingsByWall[match.wallID, default: []].append(match.rectangle)
+                }
+            }
             let scene = SCNScene()
             view.scene = scene
 
             addLighting(to: scene)
             if layers.floor { addFloors(project, to: scene) }
-            if layers.walls { addWalls(project, to: scene, focusedWallID: focusedWallID) }
+            if layers.walls { addWalls(project, to: scene, focusedWallID: focusedWallID, showAppearances: layers.wallPhotos) }
             if layers.openings { addOpeningFrames(project, to: scene) }
             if layers.furniture { addObjects(project, to: scene) }
             if layers.electrical { addElectrical(project, to: scene) }
             if layers.ceilingLighting { addCeilingLights(project, to: scene) }
             configureCamera(in: scene, view: view, project: project, focusedWallID: focusedWallID)
+            if let cameraTransform {
+                view.pointOfView?.simdTransform = cameraTransform
+                if let cameraFieldOfView { view.pointOfView?.camera?.fieldOfView = cameraFieldOfView }
+            }
+            performance.refresh()
         }
 
         private func addLighting(to scene: SCNScene) {
@@ -98,9 +114,10 @@ struct SnapshotRoom3DView: UIViewRepresentable {
             let omni = SCNLight()
             omni.type = .omni
             omni.intensity = 900
-            omni.castsShadow = true
+            omni.castsShadow = false
             omni.shadowRadius = 6
             let omniNode = SCNNode()
+            omniNode.name = "qto-snapshot-key-light"
             omniNode.light = omni
             omniNode.position = SCNVector3(0, 5, 0)
             scene.rootNode.addChildNode(omniNode)
@@ -109,7 +126,8 @@ struct SnapshotRoom3DView: UIViewRepresentable {
         private func addWalls(
             _ project: RoomProject,
             to scene: SCNScene,
-            focusedWallID: UUID?
+            focusedWallID: UUID?,
+            showAppearances: Bool
         ) {
             let root = SCNNode()
             root.name = "snapshot-architecture-walls"
@@ -127,9 +145,15 @@ struct SnapshotRoom3DView: UIViewRepresentable {
                     wallHeight: wall.height,
                     openings: openings
                 )
-                let appearance = project.wallAppearances?.first { $0.wallID == wall.id }
-                let baseColor = appearance.flatMap { UIColor(snapshotHex: $0.solidColorHex) }
-                    ?? UIColor.systemGray5
+                let appearance = showAppearances ? project.wallAppearances?.first { $0.wallID == wall.id } : nil
+                let baseColor = appearance?.visualMode == .solidColor
+                    ? UIColor(snapshotHex: appearance?.solidColorHex ?? "") ?? UIColor.systemGray5
+                    : UIColor.systemGray5
+                let photo: UIImage?
+                if appearance?.visualMode == .capturedPhotos,
+                   let asset = project.primaryPhoto(for: wall.id) {
+                    photo = WallPhotoStorage.image(projectID: project.id, asset: asset)
+                } else { photo = nil }
                 let emphasized = focusedWallID == wall.id
 
                 for cell in cells {
@@ -149,8 +173,39 @@ struct SnapshotRoom3DView: UIViewRepresentable {
                     let node = SCNNode(geometry: box)
                     node.position = SCNVector3(cell.centerX, cell.centerY, 0)
                     wallNode.addChildNode(node)
+                    if let photo, let appearance, !emphasized {
+                        addPhotoCell(cell, wall: wall, image: photo, appearance: appearance, to: wallNode)
+                    }
                 }
             }
+        }
+
+        private func addPhotoCell(
+            _ cell: SolidCell, wall: WallSnapshot, image: UIImage,
+            appearance: WallAppearance, to wallNode: SCNNode
+        ) {
+            let left = cell.centerX - cell.width / 2, right = cell.centerX + cell.width / 2
+            let bottom = cell.centerY - cell.height / 2, top = cell.centerY + cell.height / 2
+            let vertices = [SCNVector3(left, bottom, 0.041), SCNVector3(right, bottom, 0.041),
+                            SCNVector3(right, top, 0.041), SCNVector3(left, top, 0.041)]
+            let uv = vertices.map { point -> CGPoint in
+                let u = CGFloat((point.x + wall.width / 2) / max(wall.width, 0.001))
+                let v = 1 - CGFloat((point.y + wall.height / 2) / max(wall.height, 0.001))
+                return CGPoint(x: appearance.flipsPhotoHorizontally ? 1 - u : u,
+                               y: appearance.flipsPhotoVertically ? 1 - v : v)
+            }
+            let mesh = SCNGeometry(
+                sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(textureCoordinates: uv)],
+                elements: [SCNGeometryElement(indices: [UInt16(0), 1, 2, 0, 2, 3], primitiveType: .triangles)]
+            )
+            let material = SCNMaterial()
+            material.diffuse.contents = image
+            material.diffuse.mipFilter = .linear
+            material.lightingModel = .constant
+            material.isDoubleSided = true
+            material.transparency = CGFloat(appearance.opacity)
+            mesh.materials = [material]
+            wallNode.addChildNode(SCNNode(geometry: mesh))
         }
 
         private func addFloors(_ project: RoomProject, to scene: SCNScene) {
@@ -158,10 +213,19 @@ struct SnapshotRoom3DView: UIViewRepresentable {
             root.name = "snapshot-architecture-floors"
             scene.rootNode.addChildNode(root)
             for floor in project.floors ?? [] {
-                let plane = SCNPlane(
-                    width: CGFloat(max(floor.width, 0.01)),
-                    height: CGFloat(max(floor.depth, 0.01))
-                )
+                let plane: SCNGeometry
+                if let polygon = QTOQualityMath.floorPolygon(floor.polygonCorners),
+                   let indices = QTOQualityMath.triangles(polygon) {
+                    let vertices = polygon.map { SCNVector3(Float($0.x), Float($0.y), 0) }
+                    plane = SCNGeometry(
+                        sources: [SCNGeometrySource(vertices: vertices),
+                                  SCNGeometrySource(normals: polygon.map { _ in SCNVector3(0, 0, 1) })],
+                        elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)]
+                    )
+                } else {
+                    plane = SCNPlane(width: CGFloat(max(floor.width, 0.01)),
+                                     height: CGFloat(max(floor.depth, 0.01)))
+                }
                 let material = SCNMaterial()
                 material.diffuse.contents = UIColor.systemGray4
                 material.roughness.contents = 0.9
@@ -200,10 +264,10 @@ struct SnapshotRoom3DView: UIViewRepresentable {
             scene.rootNode.addChildNode(root)
             for point in project.points where point.worldPosition.count >= 3 {
                 let sphere = SCNSphere(radius: 0.045)
+                sphere.segmentCount = 12
                 let material = SCNMaterial()
-                material.diffuse.contents = point.status == .existing
-                    ? UIColor.systemBlue
-                    : UIColor.systemGreen
+                material.diffuse.contents = UIColor(snapshotHex: point.colorHex ?? "")
+                    ?? (point.status == .existing ? UIColor.systemBlue : UIColor.systemGreen)
                 material.emission.contents = (material.diffuse.contents as? UIColor)?
                     .withAlphaComponent(0.22)
                 sphere.materials = [material]
@@ -302,16 +366,9 @@ struct SnapshotRoom3DView: UIViewRepresentable {
             on wall: WallSnapshot,
             project: RoomProject
         ) -> [OpeningRect] {
-            let inverse = simd_inverse(wall.matrix)
-            return project.surfaces.compactMap { surface in
-                let local = inverse * surface.matrix.columns.3
-                guard abs(local.z) <= 0.45 else { return nil }
-                let minX = max(-wall.width / 2, local.x - surface.width / 2)
-                let maxX = min(wall.width / 2, local.x + surface.width / 2)
-                let minY = max(-wall.height / 2, local.y - surface.height / 2)
-                let maxY = min(wall.height / 2, local.y + surface.height / 2)
-                guard maxX - minX > 0.04, maxY - minY > 0.04 else { return nil }
-                return OpeningRect(minX: minX, maxX: maxX, minY: minY, maxY: maxY)
+            (openingsByWall[wall.id] ?? []).map {
+                OpeningRect(minX: Float($0.minX), maxX: Float($0.maxX),
+                            minY: Float($0.minY), maxY: Float($0.maxY))
             }
         }
 
@@ -361,9 +418,8 @@ struct SnapshotRoom3DView: UIViewRepresentable {
                     }
                 }
             }
-            return cells.isEmpty
-                ? [SolidCell(centerX: 0, centerY: 0, width: wallWidth, height: wallHeight)]
-                : cells
+            // A fully open wall must not be filled back in by a fallback.
+            return cells
         }
 
         private func uniqueSorted(_ values: [Float]) -> [Float] {

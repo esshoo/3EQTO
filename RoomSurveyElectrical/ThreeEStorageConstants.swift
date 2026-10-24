@@ -1,7 +1,7 @@
 import Foundation
 
 enum ThreeEStorageConstants {
-    static let displayName = "3ERoomElectrical"
+    static let displayName = "3EQTO"
     static let bundleIdentifier = "com.essam.3E.roomelectrical"
     static let appKey = "roomElectrical"
     static let urlScheme = "electrical"

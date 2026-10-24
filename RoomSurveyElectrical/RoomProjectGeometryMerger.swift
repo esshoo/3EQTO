@@ -121,7 +121,8 @@ enum RoomProjectGeometryMerger {
                     id: snapshot.id,
                     width: snapshot.width,
                     depth: snapshot.depth,
-                    matrix: effectiveTransform * snapshot.matrix
+                    matrix: effectiveTransform * snapshot.matrix,
+                    polygonCorners: snapshot.polygonCorners
                 )
             }
         )
@@ -264,7 +265,8 @@ enum RoomProjectGeometryMerger {
                     id: snapshot.id,
                     width: snapshot.width,
                     depth: snapshot.depth,
-                    matrix: transform * snapshot.matrix
+                    matrix: transform * snapshot.matrix,
+                    polygonCorners: snapshot.polygonCorners
                 )
             },
             objects: capturedRoom.objects.map {
@@ -496,7 +498,8 @@ enum RoomProjectGeometryMerger {
             height: snapshot.height,
             matrix: transform * snapshot.matrix,
             colorHex: snapshot.colorHex,
-            isManuallyAdded: snapshot.isManuallyAdded
+            isManuallyAdded: snapshot.isManuallyAdded,
+            parentWallID: snapshot.parentWallID
         )
     }
 
@@ -593,7 +596,8 @@ enum RoomProjectGeometryMerger {
                     height: surface.height,
                     matrix: surface.matrix,
                     colorHex: old.colorHex,
-                    isManuallyAdded: old.isManuallyAdded
+                    isManuallyAdded: old.isManuallyAdded,
+                    parentWallID: old.parentWallID ?? surface.parentWallID
                 )
                 usedExisting.insert(old.id)
             } else {
@@ -658,7 +662,8 @@ enum RoomProjectGeometryMerger {
                     id: old.id,
                     width: floor.width,
                     depth: floor.depth,
-                    matrix: floor.matrix
+                    matrix: floor.matrix,
+                    polygonCorners: floor.polygonCorners
                 )
             } else {
                 merged.append(floor)

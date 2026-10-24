@@ -310,11 +310,7 @@ private struct PNGPlanRenderer {
     ) {
         for floor in record.project.floors ?? [] {
             drawPolygon(
-                ExportGeometry.floorCorners(
-                    matrix: floor.matrix,
-                    width: floor.width,
-                    depth: floor.depth
-                ).map(projection.map),
+                ExportGeometry.floorCorners(floor).map(projection.map),
                 context: context,
                 fill: UIColor(white: 0.89, alpha: 0.68),
                 stroke: UIColor(white: 0.66, alpha: 1),

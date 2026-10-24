@@ -384,11 +384,7 @@ private struct LayeredPlanPage {
         projection: PDFPlanProjection
     ) {
         for floor in record.project.floors ?? [] {
-            let points = ExportGeometry.floorCorners(
-                matrix: floor.matrix,
-                width: floor.width,
-                depth: floor.depth
-            ).map(projection.map)
+            let points = ExportGeometry.floorCorners(floor).map(projection.map)
             commands.polygon(
                 layer: "FLOOR",
                 points: points,

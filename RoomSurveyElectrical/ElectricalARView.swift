@@ -27,13 +27,13 @@ struct ElectricalARView: UIViewRepresentable {
         sceneView.session = arSession
         sceneView.scene = SCNScene()
         sceneView.automaticallyUpdatesLighting = true
-        sceneView.antialiasingMode = .multisampling4X
         sceneView.backgroundColor = .clear
 
         context.coordinator.sceneView = sceneView
-        context.coordinator.buildCapturedSurfaces()
-        context.coordinator.renderPoints()
-        context.coordinator.renderCeilingLights()
+        context.coordinator.performance.attach(
+            to: sceneView, profile: project.electricalSettings?.spatialScanPerformanceProfile ?? .balanced
+        )
+        context.coordinator.updateContentIfNeeded()
 
         let tap = UITapGestureRecognizer(
             target: context.coordinator,
@@ -45,14 +45,37 @@ struct ElectricalARView: UIViewRepresentable {
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.buildCapturedSurfaces()
-        context.coordinator.renderPoints()
-        context.coordinator.renderCeilingLights()
+        context.coordinator.updateContentIfNeeded()
+        context.coordinator.performance.refresh(
+            profile: project.electricalSettings?.spatialScanPerformanceProfile ?? .balanced
+        )
     }
 
+    static func dismantleUIView(_ view: ARSCNView, coordinator: Coordinator) {
+        coordinator.performance.stop()
+        view.isPlaying = false
+        view.session = ARSession() // Detach, but never pause the owner's shared session.
+        coordinator.sceneView = nil
+    }
+
+    @MainActor
     final class Coordinator: NSObject {
         var parent: ElectricalARView
         weak var sceneView: ARSCNView?
+        let performance = QTOScenePerformanceController()
+        private var lastProject: RoomProject?
+        private var lastTransform: [Float]?
+
+        func updateContentIfNeeded() {
+            let transform = parent.worldToProjectTransform?.columnMajorValues
+            let geometryChanged = lastProject?.walls != parent.project.walls
+                || lastProject?.floors != parent.project.floors || transform != lastTransform
+            if geometryChanged { buildCapturedSurfaces() }
+            if geometryChanged || lastProject?.points != parent.project.points { renderPoints() }
+            if geometryChanged || lastProject?.ceilingLights != parent.project.ceilingLights { renderCeilingLights() }
+            lastProject = parent.project
+            lastTransform = transform
+        }
 
         private let wallRootName = "captured-walls"
         private let ceilingRootName = "captured-ceilings"

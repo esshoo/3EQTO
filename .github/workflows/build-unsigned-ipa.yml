@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-latest
@@ -43,6 +50,14 @@ jobs:
           python3 Tools/check-adaptive-layout.py
           python3 Tools/check-threee-integration.py
           python3 Tools/check-architectural-corrections.py
+
+      - name: Verify 3EQTO geometry and resource-budget regression tests
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          python3 Tools/check-qto-quality.py | tee build/qto-quality-report.txt
+          python3 Tools/check-qto-dxf.py | tee -a build/qto-quality-report.txt
 
       - name: Build for a physical iPhone
         id: xcodebuild
@@ -100,19 +115,27 @@ jobs:
           mkdir -p build/Payload
           ditto "$APP_PATH" build/Payload/3ERoomElectrical.app
           cd build
-          zip -qry 3ERoomElectrical-unsigned.ipa Payload
-          unzip -l 3ERoomElectrical-unsigned.ipa | grep -q 'Payload/3ERoomElectrical.app/PlugIns/3ERoomElectricalWidgetExtension.appex/'
+          zip -qry 3EQTO-unsigned.ipa Payload
+          unzip -l 3EQTO-unsigned.ipa | grep -q 'Payload/3ERoomElectrical.app/PlugIns/3ERoomElectricalWidgetExtension.appex/'
+
+      - name: Record build identity and IPA checksum
+        if: steps.xcodebuild.outputs.status == '0'
+        shell: bash
+        run: python3 Tools/write-build-metadata.py
 
       - name: Upload IPA and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: 3ERoomElectrical-unsigned
+          name: 3EQTO-unsigned
           path: |
-            build/3ERoomElectrical-unsigned.ipa
+            build/3EQTO-unsigned.ipa
             build.log
             build/RoomSurveyElectrical.xcresult
             build/widget-bundle-report.txt
+            build/qto-quality-report.txt
+            build/build-info.json
+            build/3EQTO-unsigned.ipa.sha256
           if-no-files-found: warn
           retention-days: 14
 
@@ -129,5 +152,5 @@ jobs:
             grep -nEi 'error:|fatal error|failed|failure|multiple commands produce|build input file cannot be found' build.log | tail -n 80 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Xcode build failed. Download the 3ERoomElectrical-unsigned artifact for the complete build.log and xcresult."
+          echo "::error::Xcode build failed. Download the 3EQTO-unsigned artifact for the complete build.log and xcresult."
           exit "${{ steps.xcodebuild.outputs.status }}"

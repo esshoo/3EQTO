@@ -17,6 +17,12 @@ enum WallPhotoStorageError: LocalizedError {
 }
 
 enum WallPhotoStorage {
+    /// Discard decoded images only. The source JPEGs and project metadata stay intact.
+    static func purgeMemoryCaches() {
+        fullImageCache.removeAllObjects()
+        thumbnailImageCache.removeAllObjects()
+    }
+
     private static let fullImageCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
         cache.countLimit = 12

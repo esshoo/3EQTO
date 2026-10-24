@@ -141,8 +141,8 @@ def main() -> int:
     check("architecturalCorrections: source.architecturalCorrections?.map" in project_repo, "scan duplication remaps correction scan IDs")
     check("workspaceLayerVisible(.architecturalCorrections)" in room_viewer, "viewer consumes architectural layer visibility")
     check("source.hasArchitecturalCorrections" in geometry_merger, "live geometry merge is blocked over accepted corrections")
-    check(pbx.count("CURRENT_PROJECT_VERSION = 49;") == 4, "all targets use build 49")
-    check(pbx.count("MARKETING_VERSION = 1.9.27;") == 4, "all targets use version 1.9.27")
+    check(pbx.count("CURRENT_PROJECT_VERSION = 50;") == 4, "all targets use build 50")
+    check(pbx.count("MARKETING_VERSION = 1.9.28;") == 4, "all targets use version 1.9.28")
 
     parse_all_swift()
     runtime_contract_test()

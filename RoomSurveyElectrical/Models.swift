@@ -306,6 +306,7 @@ struct SurfaceSnapshot: Codable, Identifiable, Equatable {
     var transform: [Float]
     var colorHex: String?
     var isManuallyAdded: Bool?
+    var parentWallID: UUID?
 
     init(surface: CapturedRoom.Surface, kind: Kind) {
         id = surface.identifier
@@ -315,6 +316,7 @@ struct SurfaceSnapshot: Codable, Identifiable, Equatable {
         transform = surface.transform.columnMajorValues
         colorHex = nil
         isManuallyAdded = false
+        parentWallID = surface.parentIdentifier
     }
 
     init(
@@ -324,7 +326,8 @@ struct SurfaceSnapshot: Codable, Identifiable, Equatable {
         height: Float,
         matrix: simd_float4x4,
         colorHex: String? = nil,
-        isManuallyAdded: Bool? = true
+        isManuallyAdded: Bool? = true,
+        parentWallID: UUID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -333,6 +336,7 @@ struct SurfaceSnapshot: Codable, Identifiable, Equatable {
         transform = matrix.columnMajorValues
         self.colorHex = colorHex
         self.isManuallyAdded = isManuallyAdded
+        self.parentWallID = parentWallID
     }
 
     var matrix: simd_float4x4 {
@@ -345,25 +349,36 @@ struct FloorSnapshot: Codable, Identifiable, Equatable {
     let width: Float
     let depth: Float
     let transform: [Float]
+    var polygonCorners: [[Float]]?
 
     init(surface: CapturedRoom.Surface) {
         id = surface.identifier
         width = surface.dimensions.x
         depth = surface.dimensions.y
         transform = surface.transform.columnMajorValues
+        let corners = surface.polygonCorners.map { [$0.x, $0.y, $0.z] }
+        polygonCorners = QTOQualityMath.floorPolygon(corners) == nil ? nil : corners
     }
 
     init(
         id: UUID,
         width: Float,
         depth: Float,
-        matrix: simd_float4x4
+        matrix: simd_float4x4,
+        polygonCorners: [[Float]]? = nil
     ) {
         self.id = id
         self.width = width
         self.depth = depth
         transform = matrix.columnMajorValues
+        self.polygonCorners = polygonCorners
     }
+
+    var measuredArea: Float {
+        QTOQualityMath.floorArea(corners: polygonCorners, width: width, depth: depth)
+    }
+
+    var hasMeasuredPolygon: Bool { QTOQualityMath.floorPolygon(polygonCorners) != nil }
 
     var matrix: simd_float4x4 {
         simd_float4x4(columnMajorValues: transform)
@@ -1100,8 +1115,10 @@ struct FloorTakeoffLine: Identifiable, Equatable {
     let id: UUID
     let width: Float
     let depth: Float
+    var polygonArea: Float? = nil
 
-    var area: Float { width * depth }
+    var usesPolygon: Bool { polygonArea != nil }
+    var area: Float { polygonArea ?? QTOQualityMath.positiveProduct(width, depth) }
 }
 
 struct OpeningTakeoffLine: Identifiable, Equatable {
@@ -1111,7 +1128,7 @@ struct OpeningTakeoffLine: Identifiable, Equatable {
     let height: Float
     let wallID: UUID?
 
-    var area: Float { width * height }
+    var area: Float { QTOQualityMath.positiveProduct(width, height) }
 
     var title: String {
         switch kind {
@@ -1129,7 +1146,7 @@ struct WallTakeoffLine: Identifiable, Equatable {
     let openingArea: Float
     let openingCount: Int
 
-    var grossArea: Float { width * height }
+    var grossArea: Float { QTOQualityMath.positiveProduct(width, height) }
     var deductedOpeningArea: Float { min(max(openingArea, 0), grossArea) }
     var netArea: Float { max(0, grossArea - deductedOpeningArea) }
 }
@@ -1160,31 +1177,17 @@ struct RoomTakeoffSummary: Identifiable, Equatable {
             FloorTakeoffLine(
                 id: $0.id,
                 width: $0.width,
-                depth: $0.depth
+                depth: $0.depth,
+                polygonArea: $0.hasMeasuredPolygon ? $0.measuredArea : nil
             )
         }
 
         var wallAssignments: [UUID: UUID] = [:]
+        var clippedOpenings: [UUID: [QTORect]] = [:]
         for surface in project.surfaces {
-            let bestMatch = project.walls.compactMap {
-                wall -> (wallID: UUID, distance: Float)? in
-                let localCenter = simd_mul(
-                    simd_inverse(wall.matrix),
-                    surface.matrix.columns.3
-                )
-                let horizontalLimit = wall.width / 2 + surface.width / 2
-                let verticalLimit = wall.height / 2 + surface.height / 2
-                guard abs(localCenter.x) <= horizontalLimit,
-                      abs(localCenter.y) <= verticalLimit,
-                      abs(localCenter.z) <= 0.45 else {
-                    return nil
-                }
-                return (wall.id, abs(localCenter.z))
-            }
-            .min { $0.distance < $1.distance }
-
-            if let wallID = bestMatch?.wallID {
-                wallAssignments[surface.id] = wallID
+            if let match = QTOTakeoffGeometry.assignOpening(surface, walls: project.walls) {
+                wallAssignments[surface.id] = match.wallID
+                clippedOpenings[match.wallID, default: []].append(match.rectangle)
             }
         }
 
@@ -1205,7 +1208,7 @@ struct RoomTakeoffSummary: Identifiable, Equatable {
                 id: wall.id,
                 width: wall.width,
                 height: wall.height,
-                openingArea: wallOpenings.reduce(0) { $0 + $1.area },
+                openingArea: Float(QTOQualityMath.unionArea(clippedOpenings[wall.id] ?? [])),
                 openingCount: wallOpenings.count
             )
         }
@@ -1235,6 +1238,8 @@ struct RoomTakeoffSummary: Identifiable, Equatable {
         }.count
     }
 
+    var rectangularFloorEstimateCount: Int { floors.filter { !$0.usesPolygon }.count }
+    var polygonFloorCount: Int { floors.filter(\.usesPolygon).count }
     var floorArea: Float { floors.reduce(0) { $0 + $1.area } }
     var ceilingArea: Float { floorArea }
     var grossWallArea: Float { walls.reduce(0) { $0 + $1.grossArea } }

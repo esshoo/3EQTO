@@ -154,7 +154,7 @@ private struct RecentProjectsWidgetView: View {
                 VStack(spacing: 10) {
                     Image(systemName: "viewfinder.rectangular")
                         .font(.system(size: 30, weight: .bold))
-                    Text("3ERoomElectrical")
+                    Text("3EQTO")
                         .font(.headline)
                     Text("افتح التطبيق مرة واحدة لإظهار آخر المشروعات")
                         .font(.caption)
